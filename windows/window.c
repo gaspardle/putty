@@ -83,10 +83,24 @@
 #define WHEEL_DELTA 120
 #endif
 
+/* DPI change support. */
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+#ifndef NTDDI_WIN10_RS1
+#define NTDDI_WIN10_RS1 0x0A000002 
+#endif
+
 /* VK_PACKET, used to send Unicode characters in WM_KEYDOWNs */
 #ifndef VK_PACKET
 #define VK_PACKET 0xE7
 #endif
+
+DECL_WINDOWS_FUNCTION(static, BOOL, FlashWindowEx, (PFLASHWINFO));
+DECL_WINDOWS_FUNCTION(static, BOOL, ToUnicodeEx,
+                      (UINT, UINT, const BYTE *, LPWSTR, int, UINT, HKL));
+DECL_WINDOWS_FUNCTION(static, BOOL, PlaySound, (LPCTSTR, HMODULE, DWORD));
+DECL_WINDOWS_FUNCTION(static, UINT, GetDpiForWindow, (HWND));
 
 static Mouse_Button translate_button(Mouse_Button button);
 static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -1535,9 +1549,18 @@ static void init_fonts(int pick_width, int pick_height)
         font_height = pick_height;
     else {
         font_height = font->height;
+        
+        int dpi;
+        if (p_GetDpiForWindow){
+            dpi = p_GetDpiForWindow(hwnd);
+        }
+        else {
+            dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+        }
+
         if (font_height > 0) {
             font_height =
-                -MulDiv(font_height, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+                -MulDiv(font_height, dpi, 72);
         }
     }
     font_width = pick_width;
@@ -3014,6 +3037,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
       case WM_MOVE:
         sys_cursor_update();
         break;
+      case WM_DPICHANGED:
+        {
+            UINT uDpi = HIWORD(wParam);
+
+            // Resize the window
+            LPRECT lprcNewScale = (LPRECT)lParam;
+
+            SetWindowPos(hwnd, NULL, lprcNewScale->left, lprcNewScale->top,
+                lprcNewScale->right - lprcNewScale->left, lprcNewScale->bottom - lprcNewScale->top,
+                SWP_NOZORDER | SWP_NOACTIVATE);
+
+            reset_window(2);
+        }
+        return 0;
       case WM_SIZE:
         resize_action = conf_get_int(conf, CONF_resize_action);
 #ifdef RDB_DEBUG_PATCH
@@ -4074,11 +4111,6 @@ static int wintw_char_width(TermWin *tw, int uc)
     return ibuf;
 }
 
-DECL_WINDOWS_FUNCTION(static, BOOL, FlashWindowEx, (PFLASHWINFO));
-DECL_WINDOWS_FUNCTION(static, BOOL, ToUnicodeEx,
-                      (UINT, UINT, const BYTE *, LPWSTR, int, UINT, HKL));
-DECL_WINDOWS_FUNCTION(static, BOOL, PlaySound, (LPCTSTR, HMODULE, DWORD));
-
 static void init_winfuncs(void)
 {
     HMODULE user32_module = load_system32_dll("user32.dll");
@@ -4086,6 +4118,10 @@ static void init_winfuncs(void)
     GET_WINDOWS_FUNCTION(user32_module, FlashWindowEx);
     GET_WINDOWS_FUNCTION(user32_module, ToUnicodeEx);
     GET_WINDOWS_FUNCTION_PP(winmm_module, PlaySound);
+
+    if(user32_module){
+        p_GetDpiForWindow = (t_GetDpiForWindow) GetProcAddress(user32_module, "GetDpiForWindow");
+    }
 }
 
 /*
